@@ -7,8 +7,6 @@ var vows = require('vows'),
     log = require('log4node'),
     monitor_file = require('monitor_file');
 
-log.setLogLevel('debug');
-
 function randomFile(pathname) {
   return path.join(pathname || os.tmpDir(), '___node-logstash_test___' + Math.random());
 }
@@ -120,6 +118,18 @@ vows.describe('Monitor ').addBatch({
       fs.unlinkSync(m.file);
       no_error(m);
       assert.deepEqual(m.lines, ['line1', 'line2']);
+    }
+  ),
+}).addBatch({
+  'Not empty file start index 6': create_test(
+    function(m, callback) {
+      fs.writeFileSync(m.file, 'line1\nline2\n');
+      m.monitor.start(3);
+      setTimeout(callback, 200);
+    }, function(m) {
+      fs.unlinkSync(m.file);
+      no_error(m);
+      assert.deepEqual(m.lines, ['e1', 'line2']);
     }
   ),
 }).addBatch({

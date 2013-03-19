@@ -99,6 +99,15 @@ Config file for log server:
     filter://regex://http_combined
     output://elasticsearch://localhost:9001
 
+Changelog
+===
+
+0.0.2
+---
+
+* Add redis input and output plugin
+* Add tail -f input file plugin
+
 Inputs plugins
 ===
 
@@ -112,6 +121,7 @@ Example: ``input://file:///tmp/toto.log``, to monitor ``/tmp/toto.log``.
 Parameters:
 
 * ``start_index``: add ``?start_index=0`` to reread files from begining. Without this params, only new lines are read.
+* ``use_tail``: use system ``tail -f`` command to monitor file, instead of built in file monitoring. Should be used with logrotate and copytuncate option. Defaut value: false.
 * ``type``: to specify the log type, to faciliate crawling in kibana. Example: ``type=nginx_error_log``.
 
 Note: this plugin can be used on FIFO pipes.
@@ -143,6 +153,21 @@ ZeroMQ
 This plugin is used on log server to receive logs from agents.
 
 Example: ``input://zeromq://tcp://0.0.0.0:5555``, to open a zeromq socket on port 5555.
+
+Redis
+---
+
+This plugin is used on log server to receive logs from redis channels. json_event format is expected.
+
+Example:
+
+* ``input://redis://localhost:6379?channel=logstash_channel``
+
+Parameters:
+
+* ``channel``: Redis channel to subscribe/psubscribe to
+* ``type``: to specify the log type, to faciliate crawling in kibana. Example: ``type=redis``. No default value.
+* ``pattern_channel``: use channel as pattern. Default value : false
 
 Outputs and filter, commons parameters
 ===
@@ -253,6 +278,21 @@ Parameters:
 * ``proto``: ``http`` or ``https``. Default value: ``http``.
 * ``output_type``: ``raw`` or ``json``. Default is ``raw``.
 * ``format``: Log format for ``raw`` mode. Default is ``#{@message}``. Can reference log line properties (see above).
+
+Redis
+---
+
+This plugin is used to sent data on a Redis channel.
+
+Example:
+
+* ``output://redis://localhost:6379?channel=logstash_channel``
+
+Parameters:
+
+* ``channel``: Redis channel to subscribe/psubscribe to
+* ``type``: to specify the log type, to faciliate crawling in kibana. Example: ``type=app_name_log``.
+* ``pattern_channel``: use channel as pattern. Default value : false
 
 Filters
 ===

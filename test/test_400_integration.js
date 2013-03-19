@@ -11,6 +11,7 @@ var vows = require('vows'),
 
 function checkResult(line, target) {
   var parsed = JSON.parse(line);
+  delete parsed['@fields'];
   delete parsed['@timestamp'];
   target['@source_host'] = os.hostname();
   assert.deepEqual(parsed, target);
@@ -38,6 +39,9 @@ function createAgent(urls, callback, error_callback) {
 function file2x2x2file(config1, config2, clean_callback) {
   return {
     topic: function() {
+      if (clean_callback) {
+        clean_callback();
+      }
       monitor_file.setFileStatus({});
       var callback = this.callback;
       createAgent(['input://file://main_input.txt?type=test'].concat(config1), function(a1) {
@@ -59,6 +63,10 @@ function file2x2x2file(config1, config2, clean_callback) {
     check: function(err) {
       assert.ifError(err);
 
+      if (clean_callback) {
+        clean_callback();
+      }
+
       var c = fs.readFileSync('main_output.txt').toString();
       fs.unlinkSync('main_input.txt');
       fs.unlinkSync('main_output.txt');
@@ -67,9 +75,6 @@ function file2x2x2file(config1, config2, clean_callback) {
       assert.equal(splitted.length, 2);
       assert.equal("", splitted[splitted.length - 1]);
       checkResult(splitted[0], {'@source': 'main_input.txt', '@message': '234 tgerhe grgh', '@type': 'test'});
-      if (clean_callback) {
-        clean_callback();
-      }
     }
   }
 }
@@ -189,8 +194,8 @@ vows.describe('Integration :').addBatch({
             res.writeHead(201);
             res.end();
             if (reqs.length == 2) {
-              es_server.close(function() {
-                agent.close(function() {
+              agent.close(function() {
+                es_server.close(function() {
                   callback(null, reqs);
                 });
               });
@@ -242,8 +247,8 @@ vows.describe('Integration :').addBatch({
             res.writeHead(204);
             res.end();
             if (reqs.length == 1) {
-              http_server.close(function() {
-                agent.close(function() {
+              agent.close(function() {
+                http_server.close(function() {
                   callback(null, reqs);
                 });
               });
@@ -422,6 +427,7 @@ vows.describe('Integration :').addBatch({
       gelf.bind(17874);
       createAgent([
         'input://file://input1.txt?type=toto',
+        'filter://compute_field://a?only_type=toto&value=b',
         'input://file://input2.txt',
         'filter://regex://?regex=^\\[(.*)\\]&fields=timestamp&date_format=DD/MMMM/YYYY:HH:mm:ss ZZ',
         'output://gelf://localhost:17874'
@@ -452,7 +458,8 @@ vows.describe('Integration :').addBatch({
         timestamp: (new Date('2012-07-31T16:02:28+00:00')).getTime() / 1000,
         host: os.hostname(),
         facility: 'toto',
-        level: '6'
+        level: '6',
+        _a: 'b',
        },
        {
         version: '1.0',
@@ -521,7 +528,11 @@ vows.describe('Integration :').addBatch({
     'output://file:///path_which_does_not_exist/titi.txt'
   ], 'error', 'ENOENT', 'output_file'),
 }).addBatch({
-  'file transport': file2x2x2file(['output://file://main_middle.txt?output_type=json'], ['input://file://main_middle.txt'], function() { fs.unlinkSync('main_middle.txt'); }),
+  'redis channel transport': file2x2x2file(['output://redis://localhost:6379?channel=toto&db=2'], ['input://redis://localhost:6379?channel=toto&db=4']),
+}).addBatch({
+  'redis pattern channel transport': file2x2x2file(['output://redis://localhost:6379?channel=pouet_toto'], ['input://redis://localhost:6379?channel=*toto&pattern_channel=true']),
+}).addBatch({
+  'file transport': file2x2x2file(['output://file://main_middle.txt?output_type=json'], ['input://file://main_middle.txt'], function() { if (fs.existsSync('main_middle.txt')) { fs.unlinkSync('main_middle.txt'); }}),
 }).addBatch({
   'tcp transport': file2x2x2file(['output://tcp://localhost:17874'], ['input://tcp://0.0.0.0:17874']),
 }).addBatch({
