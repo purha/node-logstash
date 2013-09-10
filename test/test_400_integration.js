@@ -1,4 +1,4 @@
-var vows = require('vows'),
+var vows = require('vows-batch-retry'),
     assert = require('assert'),
     fs = require('fs'),
     agent = require('agent'),
@@ -9,11 +9,13 @@ var vows = require('vows'),
     zlib = require('zlib'),
     monitor_file = require('../lib/lib/monitor_file');
 
-function checkResult(line, target) {
+function checkResult(line, target, not_override_source_host) {
   var parsed = JSON.parse(line);
   delete parsed['@fields'];
   delete parsed['@timestamp'];
-  target['@source_host'] = os.hostname();
+  if (! not_override_source_host) {
+    target['@source_host'] = os.hostname();
+  }
   assert.deepEqual(parsed, target);
 }
 
@@ -33,7 +35,7 @@ function createAgent(urls, callback, error_callback) {
   a.loadUrls(['filter://add_source_host://', 'filter://add_timestamp://'].concat(urls), function(error) {
     assert.ifError(error);
     callback(a);
-  }, 200);
+  });
 }
 
 function file2x2x2file(config1, config2, clean_callback) {
@@ -45,18 +47,20 @@ function file2x2x2file(config1, config2, clean_callback) {
       monitor_file.setFileStatus({});
       var callback = this.callback;
       createAgent(['input://file://main_input.txt?type=test'].concat(config1), function(a1) {
-        createAgent(config2.concat(['output://file://main_output.txt?output_type=json']), function(a2) {
+        createAgent(config2.concat(['output://file://main_output.txt?serializer=json_logstash']), function(a2) {
           setTimeout(function() {
-            fs.appendFileSync('main_input.txt', '234 tgerhe grgh\n');
-            setTimeout(function() {
-              a1.close(function() {
-                a2.close(function() {
-                  callback(null);
+            fs.appendFile('main_input.txt', '234 tgerhe grgh\n', function(err) {
+              assert.ifError(err);
+              setTimeout(function() {
+                a1.close(function() {
+                  a2.close(function() {
+                    callback(null);
+                  });
                 });
-              });
-            }, 200);
+              }, 200);
+            });
           }, 200);
-        });
+        }, 200);
       });
     },
 
@@ -130,7 +134,7 @@ function check_error_module(urls, type, expected_message_pattern, expected_modul
   }
 }
 
-vows.describe('Integration :').addBatch({
+vows.describe('Integration :').addBatchRetry({
   'file2file': {
     topic: function() {
       monitor_file.setFileStatus({});
@@ -138,20 +142,29 @@ vows.describe('Integration :').addBatch({
       createAgent([
         'input://file://input1.txt',
         'input://file://input2.txt?type=input2',
-        'output://file://output1.txt?output_type=json',
-        'output://file://output2.txt?output_type=json',
+        'output://file://output1.txt?serializer=json_logstash',
+        'output://file://output2.txt?serializer=json_logstash',
+        'output://file://output3.txt?serializer=raw&format=_#{@message}_',
         ], function(agent) {
-        fs.appendFileSync('input1.txt', 'line1\n');
         setTimeout(function() {
-          fs.appendFileSync('input2.txt', 'line2\n');
-          setTimeout(function() {
-            fs.appendFileSync('input1.txt', 'line3\n');
+          fs.appendFile('input1.txt', 'line1\n', function(err) {
+            assert.ifError(err);
             setTimeout(function() {
-              agent.close(function() {
-                callback(null);
+              fs.appendFile('input2.txt', 'line2\n', function(err) {
+                assert.ifError(err);
+                setTimeout(function() {
+                  fs.appendFile('input1.txt', 'line3\n', function(err) {
+                    assert.ifError(err);
+                    setTimeout(function() {
+                      agent.close(function() {
+                        callback(null);
+                      });
+                    }, 200);
+                  });
+                }, 200);
               });
             }, 200);
-          }, 200);
+          });
         }, 200);
       });
     },
@@ -160,10 +173,12 @@ vows.describe('Integration :').addBatch({
       assert.ifError(err);
       var c1 = fs.readFileSync('output1.txt').toString();
       var c2 = fs.readFileSync('output2.txt').toString();
+      var c3 = fs.readFileSync('output3.txt').toString();
       fs.unlinkSync('input1.txt');
       fs.unlinkSync('input2.txt');
       fs.unlinkSync('output1.txt');
       fs.unlinkSync('output2.txt');
+      fs.unlinkSync('output3.txt');
 
       assert.equal(c1, c2);
       var splitted = c1.split('\n');
@@ -172,9 +187,108 @@ vows.describe('Integration :').addBatch({
       checkResult(splitted[0], {'@source': 'input1.txt', '@message': 'line1'});
       checkResult(splitted[1], {'@source': 'input2.txt', '@message': 'line2', '@type': 'input2'});
       checkResult(splitted[2], {'@source': 'input1.txt', '@message': 'line3'});
+
+      assert.equal("_line1_\n_line2_\n_line3_\n", c3);
     }
   },
-}).addBatch({
+}, 5, 20000).addBatchRetry({
+  'file2file not exising dir': {
+    topic: function() {
+      monitor_file.setFileStatus({});
+      var callback = this.callback;
+      createAgent([
+        'input://file://toto/56/87/input.txt',
+        'output://file://output.txt?serializer=json_logstash',
+        ], function(agent) {
+        setTimeout(function() {
+          fs.mkdir('toto', function(err) {
+            assert.ifError(err);
+            fs.mkdir('toto/56', function(err) {
+              assert.ifError(err);
+              fs.mkdir('toto/56/87', function(err) {
+                assert.ifError(err);
+                setTimeout(function() {
+                  fs.appendFile('toto/56/87/input.txt', 'line1\n', function(err) {
+                    assert.ifError(err);
+                    fs.appendFile('toto/56/87/input.txt', 'line2\n', function(err) {
+                      assert.ifError(err);
+                      setTimeout(function() {
+                        agent.close(function() {
+                          callback(null);
+                        });
+                      }, 200);
+                    });
+                  });
+                });
+              });
+            });
+          });
+        }, 500);
+      });
+    },
+
+    check: function(err) {
+      assert.ifError(err);
+      var c = fs.readFileSync('output.txt').toString();
+      fs.unlinkSync('toto/56/87/input.txt');
+      fs.rmdirSync('toto/56/87');
+      fs.rmdirSync('toto/56');
+      fs.rmdirSync('toto');
+      fs.unlinkSync('output.txt');
+
+      var splitted = c.split('\n');
+      assert.equal(splitted.length, 3);
+      assert.equal("", splitted[splitted.length - 1]);
+      checkResult(splitted[0], {'@source': 'toto/56/87/input.txt', '@message': 'line1'});
+      checkResult(splitted[1], {'@source': 'toto/56/87/input.txt', '@message': 'line2'});
+    }
+  },
+}, 5, 20000).addBatchRetry({
+  'json_logstash_event': {
+    topic: function() {
+      monitor_file.setFileStatus({});
+      var callback = this.callback;
+      createAgent([
+        'input://udp://0.0.0.0:67854',
+        'output://file://output.txt?serializer=json_logstash',
+        ], function(agent) {
+        var socket = dgram.createSocket('udp4');
+        var udp_send = function(s) {
+          var buffer = new Buffer(s);
+          socket.send(buffer, 0, buffer.length, 67854, 'localhost', function(err, bytes) {
+            if (err || bytes != buffer.length) {
+            }
+          })
+        };
+        setTimeout(function() {
+          udp_send('toto');
+          setTimeout(function() {
+            udp_send('{"tata":"toto","@type":"titi"}');
+            setTimeout(function() {
+              udp_send('{"tata":"toto","@message":"titi", "@source": "test42", "@type": "pouet"}');
+              setTimeout(function() {
+                socket.close();
+                callback(null)
+              }, 200);
+            }, 50);
+          }, 50);
+        }, 50);
+      }.bind(this));
+    },
+
+    check: function(err) {
+      assert.ifError(err);
+      var c = fs.readFileSync('output.txt').toString();
+      fs.unlinkSync('output.txt');
+      var splitted = c.split('\n');
+      assert.equal(splitted.length, 4);
+      assert.equal("", splitted[splitted.length - 1]);
+      checkResult(splitted[0], {'@source': 'udp_0.0.0.0_67854', '@source_host': '127.0.0.1', '@message': 'toto'}, true);
+      checkResult(splitted[1], {'@source': 'udp_0.0.0.0_67854', '@source_host': '127.0.0.1', '@message': '{"tata":"toto","@type":"titi"}'}, true);
+      checkResult(splitted[2], {'@source': 'test42', '@source_host': '127.0.0.1', '@type': 'pouet', 'tata': 'toto', '@message': 'titi'});
+    }
+  },
+}, 5, 20000).addBatchRetry({
   'elastic_search test': {
     topic: function() {
       var callback = this.callback;
@@ -228,7 +342,7 @@ vows.describe('Integration :').addBatch({
       checkResult(reqs[1].body, {'@message': 'titi', '@source': 'tcp_0.0.0.0_17875'});
     }
  },
-}).addBatch({
+}, 5, 20000).addBatchRetry({
   'http_post test': {
     topic: function() {
       var callback = this.callback;
@@ -271,13 +385,13 @@ vows.describe('Integration :').addBatch({
       assert.equal(reqs[0].body, "toto");
     }
  },
-}).addBatch({
+}, 5, 20000).addBatchRetry({
   'net2file': {
     topic: function() {
       var callback = this.callback;
       createAgent([
         'input://tcp://localhost:17874?type=2',
-        'output://file://output.txt?output_type=json',
+        'output://file://output.txt?serializer=json_logstash',
         ], function(agent) {
         var c = net.createConnection({port: 17874}, function() {
           c.write("toto");
@@ -304,7 +418,7 @@ vows.describe('Integration :').addBatch({
       checkResult(splitted[0], {'@source': 'tcp_localhost_17874', '@message': 'toto', '@type': '2'});
     }
  },
-}).addBatch({
+}, 5, 20000).addBatchRetry({
   'file2statsd': {
     topic: function() {
       monitor_file.setFileStatus({});
@@ -329,25 +443,35 @@ vows.describe('Integration :').addBatch({
         'output://statsd://127.0.0.1:17874?metric_type=gauge&metric_key=toto.gauge&metric_value=45&only_type=toto',
         ], function(agent) {
         setTimeout(function() {
-          fs.appendFileSync('input1.txt', 'line1\n');
-          setTimeout(function() {
-            fs.appendFileSync('input2.txt', 'line2\n');
+          fs.appendFile('input1.txt', 'line1\n', function(err) {
+            assert.ifError(err);
             setTimeout(function() {
-              fs.appendFileSync('input3.txt', '10\n');
-              setTimeout(function() {
-                fs.appendFileSync('input4.txt', '45_123\n');
+              fs.appendFile('input2.txt', 'line2\n', function(err) {
+                assert.ifError(err);
                 setTimeout(function() {
-                  fs.appendFileSync('input5.txt', 'line3\n');
-                  setTimeout(function() {
-                    agent.close(function() {
-                      statsd.close();
-                      callback(undefined, received);
-                    });
-                  }, 200);
+                  fs.appendFile('input3.txt', '10\n', function(err) {
+                    assert.ifError(err);
+                    setTimeout(function() {
+                      fs.appendFile('input4.txt', '45_123\n', function(err) {
+                        assert.ifError(err);
+                        setTimeout(function() {
+                          fs.appendFile('input5.txt', 'line3\n', function(err) {
+                            assert.ifError(err);
+                            setTimeout(function() {
+                              agent.close(function() {
+                                statsd.close();
+                                callback(undefined, received);
+                              });
+                            }, 200);
+                          });
+                        }, 200);
+                      });
+                    }, 200);
+                  });
                 }, 200);
-              }, 200);
+              });
             }, 200);
-          }, 200);
+          });
         }, 200);
       });
     },
@@ -369,10 +493,10 @@ vows.describe('Integration :').addBatch({
         'toto.bouh:1|c',
         'toto.bouh:1|c',
         'toto.gauge:45|g',
-      ].sort());
-    }
- },
- }).addBatch({
+        ].sort());
+      }
+   },
+ }, 5, 20000).addBatchRetry({
   'file2statsd_missing_field': {
     topic: function() {
       monitor_file.setFileStatus({});
@@ -390,14 +514,18 @@ vows.describe('Integration :').addBatch({
         'output://statsd://127.0.0.1:17874?metric_type=increment&metric_key=toto.bouh.#{unknown_field}',
         ], function(agent) {
         setTimeout(function() {
-          fs.appendFileSync('input1.txt', 'line1\n');
-          fs.appendFileSync('input1.txt', 'line2\n');
-          setTimeout(function() {
-            agent.close(function() {
-              statsd.close();
-              callback(errors, received);
+          fs.appendFile('input1.txt', 'line1\n', function(err) {
+            assert.ifError(err);
+            fs.appendFile('input1.txt', 'line2\n', function(err) {
+              assert.ifError(err);
+              setTimeout(function() {
+                agent.close(function() {
+                  statsd.close();
+                  callback(errors, received);
+                });
+              }, 200);
             });
-          }, 200);
+          });
         }, 200);
       }, function(error) {
         errors.push(error);
@@ -410,7 +538,7 @@ vows.describe('Integration :').addBatch({
       assert.equal(errors.length, 0);
     }
  },
-}).addBatch({
+}, 5, 20000).addBatchRetry({
   'file2gelf': {
     topic: function() {
       monitor_file.setFileStatus({});
@@ -433,16 +561,20 @@ vows.describe('Integration :').addBatch({
         'output://gelf://localhost:17874'
         ], function(agent) {
         setTimeout(function() {
-          fs.appendFileSync('input1.txt', '[31/Jul/2012:18:02:28 +0200] line1\n');
-          setTimeout(function() {
-            fs.appendFileSync('input2.txt', '[31/Jul/2012:20:02:28 +0200] line2\n');
+          fs.appendFile('input1.txt', '[31/Jul/2012:18:02:28 +0200] line1\n', function(err) {
+            assert.ifError(err);
             setTimeout(function() {
-              agent.close(function() {
-                gelf.close();
-                callback(undefined, received);
+              fs.appendFile('input2.txt', '[31/Jul/2012:20:02:28 +0200] line2\n', function(err) {
+                assert.ifError(err);
+                setTimeout(function() {
+                  agent.close(function() {
+                    gelf.close();
+                    callback(undefined, received);
+                  });
+                }, 200);
               });
             }, 200);
-          }, 200);
+          });
         }, 200);
       });
     },
@@ -472,7 +604,7 @@ vows.describe('Integration :').addBatch({
       ].sort());
     }
   },
-}).addBatch({
+}, 5, 20000).addBatchRetry({
   'multiline simple test': {
     topic: function() {
       monitor_file.setFileStatus({});
@@ -480,12 +612,16 @@ vows.describe('Integration :').addBatch({
       createAgent([
         'input://file://input.txt',
         'filter://multiline://?start_line_regex=^1234',
-        'output://file://output.txt?output_type=json',
+        'output://file://output.txt?serializer=json_logstash',
         ], function(agent) {
-        fs.appendFileSync('input.txt', 'line1\nline2\n1234line3\n1234line4\nline5\n');
         setTimeout(function() {
-          agent.close(function() {
-            callback(null);
+          fs.appendFile('input.txt', 'line1\nline2\n1234line3\n1234line4\nline5\n', function(err) {
+            assert.ifError(err);
+            setTimeout(function() {
+              agent.close(function() {
+                callback(null);
+              });
+            }, 200);
           });
         }, 200);
       });
@@ -505,7 +641,7 @@ vows.describe('Integration :').addBatch({
       assert.equal(JSON.parse(splitted[2])['@message'], "1234line4\nline5");
     }
   },
-}).addBatch({
+}, 5, 20000).addBatch({
   'non_existent_module': check_error_init([
     'input://non_existent_module://'
     ], 'Cannot find module'),
@@ -519,26 +655,28 @@ vows.describe('Integration :').addBatch({
     'input://tcp://0.0.0.0:abcd'
     ], 'Unable to extract port'),
 }).addBatch({
- 'input_file_error': check_error_module([
-   'input://file:///path_which_does_not_exist/input1.txt',
+ 'input_file_error : root directory not readable': check_error_module([
+   'input://file:///root/toto/43input1.txt',
    'output://stdout://'
-   ], 'init_error', 'Error: watch ENOENT', 'input_file'),
+   ], 'init_error', 'Error: watch EACCES', 'input_file'),
 }).addBatch({
   'wrong_output_file_module': check_error_module([
     'output://file:///path_which_does_not_exist/titi.txt'
   ], 'error', 'ENOENT', 'output_file'),
-}).addBatch({
+}).addBatchRetry({
   'redis channel transport': file2x2x2file(['output://redis://localhost:6379?channel=toto&db=2'], ['input://redis://localhost:6379?channel=toto&db=4']),
-}).addBatch({
+}, 5, 20000).addBatchRetry({
   'redis pattern channel transport': file2x2x2file(['output://redis://localhost:6379?channel=pouet_toto'], ['input://redis://localhost:6379?channel=*toto&pattern_channel=true']),
-}).addBatch({
-  'file transport': file2x2x2file(['output://file://main_middle.txt?output_type=json'], ['input://file://main_middle.txt'], function() { if (fs.existsSync('main_middle.txt')) { fs.unlinkSync('main_middle.txt'); }}),
-}).addBatch({
+}, 5, 20000).addBatchRetry({
+  'file transport': file2x2x2file(['output://file://main_middle.txt?serializer=json_logstash'], ['input://file://main_middle.txt'], function() { if (fs.existsSync('main_middle.txt')) { fs.unlinkSync('main_middle.txt'); }}),
+}, 5, 20000).addBatchRetry({
   'tcp transport': file2x2x2file(['output://tcp://localhost:17874'], ['input://tcp://0.0.0.0:17874']),
-}).addBatch({
+}, 5, 20000).addBatchRetry({
   'zeromq transport': file2x2x2file(['output://zeromq://tcp://localhost:17874'], ['input://zeromq://tcp://*:17874']),
-}).addBatch({
+}, 5, 20000).addBatchRetry({
+  'zeromq transport using msgpack': file2x2x2file(['output://zeromq://tcp://localhost:17874?serializer=msgpack'], ['input://zeromq://tcp://*:17874?unserializer=msgpack']),
+}, 5, 20000).addBatchRetry({
   'unix socket transport': file2x2x2file(['output://unix:///tmp/test_socket'], ['input://unix:///tmp/test_socket']),
-}).addBatch({
+}, 5, 20000).addBatchRetry({
   'udp transport': file2x2x2file(['output://udp://localhost:17874'], ['input://udp://127.0.0.1:17874']),
-}).export(module);
+}, 5, 20000).export(module);

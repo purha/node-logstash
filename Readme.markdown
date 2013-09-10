@@ -1,6 +1,8 @@
 node-logstash
 ====
 
+[![Build Status](https://travis-ci.org/bpaquet/node-logstash.png)](https://travis-ci.org/bpaquet/node-logstash)
+
 What is it ?
 ---
 
@@ -102,6 +104,9 @@ Config file for log server:
 Changelog
 ===
 
+* Add serializer and unserializer support
+* Allow to use input file plugin on non existent directory
+
 0.0.2
 ---
 
@@ -110,6 +115,14 @@ Changelog
 
 Inputs plugins
 ===
+
+Unserializers :
+
+Some inputs plugins supports the ``unserializer`` params.
+Supported unserializer for input plugin :
+
+* ``json_logstash``: the unserializer try to parse data as a json object. If fail, raw data is returned. Some input plugins can not accept raw data.
+* ``msgpack``: the unserializer try to parse data as a [msgpack](http://msgpack.org) object. If fail, raw data is returned. Some input plugins can not accept raw data.
 
 File
 ---
@@ -124,6 +137,7 @@ Parameters:
 * ``use_tail``: use system ``tail -f`` command to monitor file, instead of built in file monitoring. Should be used with logrotate and copytuncate option. Defaut value: false.
 * ``unescape_hex_escaped``: escape hexadecimal sequences with corresponding characters ( apache json logs )
 * ``type``: to specify the log type, to faciliate crawling in kibana. Example: ``type=nginx_error_log``.
+* ``unserializer``: please see above. Default value to ``json_logstash``.
 
 Note: this plugin can be used on FIFO pipes.
 
@@ -155,6 +169,9 @@ This plugin is used on log server to receive logs from agents.
 
 Example: ``input://zeromq://tcp://0.0.0.0:5555``, to open a zeromq socket on port 5555.
 
+Parameters :
+* ``unserializer``: please see above. Default value to ``json_logstash``. This plugin does not support raw data.
+
 Redis
 ---
 
@@ -169,6 +186,7 @@ Parameters:
 * ``channel``: Redis channel to subscribe/psubscribe to
 * ``type``: to specify the log type, to faciliate crawling in kibana. Example: ``type=redis``. No default value.
 * ``pattern_channel``: use channel as pattern. Default value : false
+* ``unserializer``: please see above. Default value to ``json_logstash``.
 
 Outputs and filter, commons parameters
 ===
@@ -190,12 +208,26 @@ Some params are string, which can reference line log properties:
 Ouputs plugins
 ===
 
+Serializer :
+
+Some outputs plugins support the ``serializer`` params.
+Supported serializer for output plugin :
+
+* ``json_logstash``: this serializer dumps the log line to a JSON Object.
+* ``msgpack``: this serializer dumps the log line to a [msgpack](http://msgpack.org) Object.
+* ``raw``: this serializer dumps the log line to a string, given in the ``format`` parameter. The ``format`` string can reference log lines properties (see above). Default ``format`` value is ``#{message}``.
+
 ZeroMQ
 ---
 
 This plugin is used on agents to send logs to logs servers.
 
 Example: ``output://zeromq://tcp://192.168.1.1:5555``, to send logs to 192.168.1.1 port 5555.
+
+Parameters:
+
+* ``serializer``: please see above. Default value to ``json_logstash``.
+* ``format``: please see above. Used by the ``raw``serializer.
 
 Elastic search
 ---
@@ -259,8 +291,8 @@ Example 1: ``output://file:///var/log/toto.log?only_type=nginx``, to write each 
 
 Parameters:
 
-* ``output_type``: ``raw`` or ``json``. Default is ``raw``.
-* ``format``: Log format for ``raw`` mode. Default is ``#{@message}``. Can reference log line properties (see above).
+* ``serializer``: please see above. Default value to ``raw``.
+* ``format``: please see above. Used by the ``raw``serializer.
 
 HTTP Post
 ---
@@ -277,8 +309,8 @@ Parameters:
 
 * ``path``: path to use in the HTTP request. Can reference log line properties (see above).
 * ``proto``: ``http`` or ``https``. Default value: ``http``.
-* ``output_type``: ``raw`` or ``json``. Default is ``raw``.
-* ``format``: Log format for ``raw`` mode. Default is ``#{@message}``. Can reference log line properties (see above).
+* ``serializer``: please see above. Default value to ``json_logstash``.
+* ``format``: please see above. Used by the ``raw``serializer.
 
 Redis
 ---
@@ -294,6 +326,8 @@ Parameters:
 * ``channel``: Redis channel to subscribe/psubscribe to
 * ``type``: to specify the log type, to faciliate crawling in kibana. Example: ``type=app_name_log``.
 * ``pattern_channel``: use channel as pattern. Default value : false
+* ``serializer``: please see above. Default value to ``json_logstash``.
+* ``format``: please see above. Used by the ``raw``serializer.
 
 Filters
 ===
@@ -404,13 +438,28 @@ Parameters:
 * ``start_line_regex``: egular expression which is used to find lines which start blocks. You have to escape special characters.
 * ``max_delay``: delay to wait the end of a block. Default value: 50 ms. Softwares which write logs by block usually write blocks in one time, this parameter is used to send lines without waiting the next matching start line.
 
+Json Fields
+---
+
+The json fields filter is used to parse the message payload as a JSON object, and merge it to the ``@fields`` attribute.
+
+This allows to automatically index fields for messages that already contain a well-formatted JSON payload. The JSON object is parsed starting from the first ``{`` character found in the message. 
+
+Filter does nothing in case of error while parsing the message. Existing attributes in ``@fields`` are kept, but overwritten if they conflict with attributes from the parsed payload.
+
+Example 1: ``filter://json_fields://?only_type=json_stream`` will parse, as JSON, the given stream of messages which ``@type`` matches ``json_stream``, and fill the ``@fields`` attribute using the messages content.
+
 Misc
 ===
 
 Force fields typing in Elastic Search
 ---
 
-If you have a custom field with an hashcode, and if the first hashcode of the day contains only digits, Elastic Search will guess the field type and will choose integer. Following insert with a real hash code with letter will failed, with a beautiful exception in Elastic Search. To avoid that, add `default-mapping.json` file in Elastic Search config directory :
+If you have a custom field with an hashcode
+- if the first hashcode of the day contains only digits, Elastic Search will guess the field type and will choose integer and it will fail to index the next values that contains letters.
+- by default elastic search will tokenize it like some real text instead of treating it like a blob, it won't impact tools like kibana but may prevent you from doing custom queries.
+
+For both cases you should add a `default-mapping.json` file in Elastic Search config directory :
 
 ```json
 {
@@ -418,8 +467,9 @@ If you have a custom field with an hashcode, and if the first hashcode of the da
     "properties": {
       "@fields": {
         "properties": {
-          "my_string_field": {
-            "type" : "string"
+          "my_hash_field": {
+            "type" : "string",
+            "index" : "not_analyzed"
           }
         }
       }
@@ -431,7 +481,7 @@ If you have a custom field with an hashcode, and if the first hashcode of the da
 License
 ===
 
-Copyright 2012 Bertrand Paquet
+Copyright 2012 - 2013 Bertrand Paquet
 
 Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with the License. You may obtain a copy of the License at
 

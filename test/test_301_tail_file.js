@@ -1,4 +1,4 @@
-var vows = require('vows'),
+var vows = require('vows-batch-retry'),
     assert = require('assert'),
     os = require('os'),
     fs = require('fs');
@@ -97,7 +97,7 @@ vows.describe('Monitor ').addBatch({
       m.monitor.start();
       setTimeout(function() {
         fs.appendFileSync(m.file, 'line1\nline2\n');
-        setTimeout(callback, 200);
+        setTimeout(callback, 1000);
       }, 200);
     }, function(m) {
       fs.unlinkSync(m.file);
@@ -126,7 +126,7 @@ vows.describe('Monitor ').addBatch({
         fs.appendFileSync(m.file, 'line1\n');
         setTimeout(function() {
           fs.appendFileSync(m.file, 'line2\n');
-          setTimeout(callback, 200);
+          setTimeout(callback, 1000);
         }, 200);
       }, 200);
     }, function(m) {
@@ -145,7 +145,7 @@ vows.describe('Monitor ').addBatch({
           setTimeout(function() {
             fs.appendFile(m.file, 'line2\n', function(err) {
               assert.ifError(err);
-              setTimeout(callback, 200);
+              setTimeout(callback, 1000);
             });
           }, 200);
         });
@@ -190,7 +190,7 @@ vows.describe('Monitor ').addBatch({
       assert.deepEqual(m.lines, ['line1', 'line2']);
     },
   undefined, {wait_delay_after_renaming: 100}),
-}).addBatch({
+}).addBatchRetry({
   'Double monitoring same directory': {
     topic: function() {
       var callback = this.callback;
@@ -224,7 +224,7 @@ vows.describe('Monitor ').addBatch({
       assert.deepEqual(m2.lines, ['line10']);
     }
   }
-}).addBatch({
+}, 5, 10000).addBatch({
   'Wrong file path': create_test(function(m, callback) {
     m.monitor.start(0);
     setTimeout(callback, 200);
